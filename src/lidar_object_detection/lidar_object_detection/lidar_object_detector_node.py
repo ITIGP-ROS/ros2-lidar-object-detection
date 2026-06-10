@@ -11,6 +11,13 @@ from .utils import bbox3d2corners
 from object_detection_msgs.msg import Object3d, Object3dArray
 from geometry_msgs.msg import Point
 
+from rclpy.qos import (
+    QoSProfile,
+    QoSReliabilityPolicy,
+    QoSHistoryPolicy,
+    QoSDurabilityPolicy
+)
+
 CLASSES = {
     'Pedestrian': 0, 
     'Cyclist': 1, 
@@ -39,11 +46,20 @@ class LidarObjectDetectorNode(Node):
     def __init__(self, weights, device=torch.device('cuda')):
         super().__init__('lidar_object_detector_node')
 
+        self.declare_parameter("output_frame_id", "velo_link")
+        self.output_frame_id = self.get_parameter("output_frame_id").get_parameter_value().string_value
+        
         self.lidar_subscription = self.create_subscription(
             msg_type = PointCloud2,
-            topic = 'lidar',
+            topic = 'kitti/velo',
             callback = self.lidar_point_cloud_callback,
-            qos_profile = 10
+            # QOS to be compatible with bag file
+            qos_profile = QoSProfile(
+                            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                            history=QoSHistoryPolicy.KEEP_LAST,
+                            durability=QoSDurabilityPolicy.VOLATILE,
+                            depth=10
+                        )
         )
 
         self.detections_publisher = self.create_publisher(Object3dArray, 'object_detections_3d', 10)
@@ -58,7 +74,19 @@ class LidarObjectDetectorNode(Node):
     def lidar_point_cloud_callback(self, lidar_msg: PointCloud2):
         
         point_cloud_numpy = rnp.numpify(lidar_msg)
-        point_cloud_numpy = point_cloud_numpy.view((np.float32, len(point_cloud_numpy.dtype.names)))    # to unstructured array
+        
+        ## KITTI format        
+        ## Compatible with my Bag file format
+        
+        point_cloud_numpy = np.stack([
+            point_cloud_numpy['x'],
+            point_cloud_numpy['y'],
+            point_cloud_numpy['z'],
+            point_cloud_numpy['intensity']
+        ], axis=1).astype(np.float32)
+        
+        
+        
         point_cloud_numpy = point_range_filter(point_cloud_numpy)
         point_cloud_tensor = torch.from_numpy(point_cloud_numpy).to(self.device)
 
@@ -91,7 +119,7 @@ class LidarObjectDetectorNode(Node):
             detection_array.objects.append(detection)
 
         detection_array.header.stamp = self.get_clock().now().to_msg()
-        detection_array.header.frame_id = 'map'
+        detection_array.header.frame_id = self.output_frame_id
         self.detections_publisher.publish(detection_array)
         self.get_logger().info("Successfully ran inference on lidar scan")
 

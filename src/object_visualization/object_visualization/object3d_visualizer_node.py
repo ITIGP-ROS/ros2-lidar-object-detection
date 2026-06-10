@@ -15,10 +15,13 @@ class Object3dVisualizerNode(Node):
 
     def __init__(self):
         super().__init__('object3d_visualizer_node')
+        
+        self.declare_parameter("confidence_threshold", 0.5)
+        self.confidence_threshold = self.get_parameter("confidence_threshold").get_parameter_value().double_value
 
         self.subscription = self.create_subscription(
             msg_type = Object3dArray,
-            topic = 'object_detections_3d',
+            topic = "object_detections_3d",
             callback = self.visual_objects3d,
             qos_profile = 1
         )
@@ -30,17 +33,25 @@ class Object3dVisualizerNode(Node):
         #self.get_logger().info(f"{msg.header}")
         
         marker_array = MarkerArray()
-        for object in msg.objects:
+        ## Make visualization suitable for a bag file
+        
+        delete_marker = Marker()
+        delete_marker.action = Marker.DELETEALL
+        marker_array.markers.append(delete_marker)
+        
+        for idx,object in enumerate(msg.objects):
+            
+            if object.confidence_score < self.confidence_threshold:
+                continue
             
             marker = Marker()
             marker.header.frame_id = msg.header.frame_id
-            marker.header.stamp = self.get_clock().now().to_msg()
-            marker.id = marker.header.stamp.nanosec # should be replaced with object.id
-            marker.type = 5
+            marker.header.stamp = msg.header.stamp
+            marker.id = idx
+            marker.type = Marker.LINE_LIST
             marker.color.r, marker.color.g, marker.color.b = LABEL_TO_COLOR[object.label]
             marker.color.a = 1.0
             marker.scale.x = 0.10
-            marker.lifetime = Duration(seconds=5.0).to_msg()    # should be removed when object.id exists
             marker.ns = "object_visualization"
 
             for i in range(4):
