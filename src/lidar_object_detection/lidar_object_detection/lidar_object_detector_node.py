@@ -41,6 +41,41 @@ def point_range_filter(pts, point_range=[0, -39.68, -3, 69.12, 39.68, 1]):
     return pts 
 
 
+
+def to_kitti_format(pc):
+    pc = np.asarray(pc)
+
+    # Case 1: structured PointCloud2 (64x1024 or similar)
+    if pc.ndim == 2 and pc.dtype.names is not None:
+        x = pc['x'].reshape(-1)
+        y = pc['y'].reshape(-1)
+        z = pc['z'].reshape(-1)
+
+        if 'intensity' in pc.dtype.names:
+            i = pc['intensity'].reshape(-1)
+        else:
+            i = np.zeros_like(x)
+
+        return np.stack([x, y, z, i], axis=-1).astype(np.float32)
+
+    # Case 2: already flat structured array
+    if pc.ndim == 1 and pc.dtype.names is not None:
+        x = pc['x']
+        y = pc['y']
+        z = pc['z']
+        i = pc['intensity'] if 'intensity' in pc.dtype.names else np.zeros_like(x)
+
+        return np.stack([x, y, z, i], axis=-1).astype(np.float32)
+
+    # Case 3: already Nx4 float array
+    if isinstance(pc, np.ndarray) and pc.ndim == 2 and pc.shape[1] >= 3:
+        if pc.shape[1] == 3:
+            i = np.zeros((pc.shape[0], 1), dtype=np.float32)
+            return np.hstack([pc, i]).astype(np.float32)
+        return pc[:, :4].astype(np.float32)
+
+    raise ValueError(f"Unknown point cloud format: {type(pc)}, shape={pc.shape}")
+
 class LidarObjectDetectorNode(Node):
 
     def __init__(self, weights, device=torch.device('cuda')):
@@ -78,13 +113,14 @@ class LidarObjectDetectorNode(Node):
         ## KITTI format        
         ## Compatible with my Bag file format
         
-        point_cloud_numpy = np.stack([
-            point_cloud_numpy['x'],
-            point_cloud_numpy['y'],
-            point_cloud_numpy['z'],
-            point_cloud_numpy['intensity']
-        ], axis=1).astype(np.float32)
+        # point_cloud_numpy = np.stack([
+        #     point_cloud_numpy['x'],
+        #     point_cloud_numpy['y'],
+        #     point_cloud_numpy['z'],
+        #     point_cloud_numpy['intensity']
+        # ], axis=1).astype(np.float32)
         
+        point_cloud_numpy = to_kitti_format(point_cloud_numpy)
         
         
         point_cloud_numpy = point_range_filter(point_cloud_numpy)
@@ -92,9 +128,27 @@ class LidarObjectDetectorNode(Node):
 
         # inference
         with torch.no_grad():
-            results = self.model(batched_pts=[point_cloud_tensor])[0]
+            outputs = self.model(batched_pts=[point_cloud_tensor])
 
+        self.get_logger().info(f"model output type: {type(outputs)}")
+
+        # -- Some safety checks to make avoid the crashes while using th Mid-360 bag files--
         
+        # ---- SAFE UNPACKING ----
+        if isinstance(outputs, (list, tuple)):
+            results = outputs[0]
+        elif isinstance(outputs, dict):
+            results = outputs
+        else:
+            self.get_logger().error(f"Unexpected model output type: {type(outputs)}")
+            return
+
+        # extra safety check
+        if not isinstance(results, dict):
+            self.get_logger().error(f"Expected dict but got: {type(results)}")
+            return
+        # ------------------------------------------------------------------       
+         
         bboxes = bbox3d2corners(results['lidar_bboxes'])
         labels = results['labels']
         confidence_scores = results['scores']
