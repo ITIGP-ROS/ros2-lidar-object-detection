@@ -90,10 +90,10 @@ class LidarObjectDetectorNode(Node):
             callback = self.lidar_point_cloud_callback,
             # QOS to be compatible with bag file
             qos_profile = QoSProfile(
-                            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                            reliability=QoSReliabilityPolicy.RELIABLE,
                             history=QoSHistoryPolicy.KEEP_LAST,
                             durability=QoSDurabilityPolicy.VOLATILE,
-                            depth=10
+                            depth=1
                         )
         )
 
