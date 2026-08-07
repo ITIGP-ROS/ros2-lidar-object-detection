@@ -8,6 +8,7 @@ from ament_index_python.packages import get_package_share_directory
 import os
 import numpy as np
 from .utils import bbox3d2corners
+from .tracking import Track3D
 from object_detection_msgs.msg import Object3d, Object3dArray
 from geometry_msgs.msg import Point
 
@@ -98,7 +99,11 @@ class LidarObjectDetectorNode(Node):
         )
 
         self.detections_publisher = self.create_publisher(Object3dArray, 'object_detections_3d', 10)
-        
+
+        # 3D multi-object tracker (vendored AB3DMOT core) that assigns stable
+        # track IDs and predicts boxes during missed detections
+        self.tracker = Track3D()
+
         # setup model
         self.device = device
         self.model = PointPillars(nclasses=len(CLASSES)).to(self.device)
@@ -143,32 +148,37 @@ class LidarObjectDetectorNode(Node):
             self.get_logger().error(f"Unexpected model output type: {type(outputs)}")
             return
 
-        # extra safety check
-        if not isinstance(results, dict):
-            self.get_logger().error(f"Expected dict but got: {type(results)}")
-            return
-        # ------------------------------------------------------------------       
-         
-        bboxes = bbox3d2corners(results['lidar_bboxes'])
-        labels = results['labels']
-        confidence_scores = results['scores']
-
-        if len(bboxes) == 0:
+        # extra safety check: the model returns a plain list when there are no detections
+        if not isinstance(results, dict) or 'lidar_bboxes' not in results:
             self.get_logger().info("empty")
-            return
+            # still advance the tracker so existing tracks age out correctly
+            tracks = self.tracker.update(
+                np.empty((0, 7), dtype=np.float32),
+                np.empty((0,), dtype=np.float32),
+                np.empty((0,), dtype=np.int64)
+            )
+        else:
+            # track detections across frames: stable IDs, Kalman prediction during misses
+            tracks = self.tracker.update(
+                results['lidar_bboxes'],
+                results['scores'],
+                results['labels']
+            )
+        # ------------------------------------------------------------------
 
         detection_array = Object3dArray()
-        for bbox, label, confidence_score in zip(bboxes, labels, confidence_scores):
+        for track in tracks:
+            # track: [x, y, z, w, l, h, yaw, score, label, track_id]
+            bbox = bbox3d2corners(track[:7].reshape(1, 7))[0]
             detection = Object3d()
-            detection.label = int(label)
-            detection.confidence_score = float(confidence_score)
+            detection.label = int(track[8])
+            detection.confidence_score = float(track[7])
+            detection.track_id = int(track[9])
             for i in range(len(bbox)):
                 corner = Point()
                 corner.x = float(bbox[i][0])
                 corner.y = float(bbox[i][1])
                 corner.z = float(bbox[i][2])
-                if corner.x == 0.0:
-                    self.get_logger().info(f"{bbox}")
                 detection.bounding_box.corners[i] = corner
             detection_array.objects.append(detection)
 
